@@ -598,6 +598,10 @@ function loadDB(): DBState {
       const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
       data.pendingPayments ||= {};
       data.portalCodes = getPortalCodes();
+      const admin = data.users.find((user: User) => user.id === 'usr_admin' && user.role === 'super_admin');
+      if (admin && process.env.DEMO_ADMIN_PASSWORD) {
+        admin.password = process.env.DEMO_ADMIN_PASSWORD;
+      }
       seedSampleTickets(data);
       return data;
     }

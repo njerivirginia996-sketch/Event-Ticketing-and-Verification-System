@@ -33,7 +33,7 @@ Create a `.env` file in the project root:
 
 Copy `.env.example` to `.env` and replace the placeholders with private values. Generate a unique QR signing key (for example, with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`); the server will not start without `QR_SECRET_KEY`.
 
-Seed account passwords and privileged portal access codes are optional environment variables. Set them to enable the corresponding demo sign-ins; without them, seeded accounts cannot log in. The local database at `data/db.json` is created automatically and is excluded from Git because it can contain user data and credentials.
+Seed account passwords and privileged portal access codes are optional environment variables. Set them to enable the corresponding demo sign-ins; without them, seeded accounts cannot log in. `DEMO_ADMIN_PASSWORD` updates the seeded Super Admin password at startup, including when a database file already exists. The local database at `data/db.json` is created automatically and is excluded from Git because it can contain user data and credentials.
 
 ## 💳 Payment Flow
 
