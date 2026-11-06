@@ -35,9 +35,9 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   onSuccess,
 }) => {
   // Buyer Details
-  const [buyerName, setBuyerName] = useState('Amina Mwangi');
-  const [buyerEmail, setBuyerEmail] = useState('amina.mwangi@example.com');
-  const [buyerPhone, setBuyerPhone] = useState('0720998877');
+  const [buyerName, setBuyerName] = useState('');
+  const [buyerEmail, setBuyerEmail] = useState('');
+  const [buyerPhone, setBuyerPhone] = useState('');
 
   // Payment Options: 'mpesa' | 'card'
   const [paymentMethod, setPaymentMethod] = useState<'mpesa' | 'card'>('mpesa');
@@ -50,8 +50,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   // States
   const [isProcessing, setIsProcessing] = useState(false);
   const [stkPromptVisible, setStkPromptVisible] = useState(false);
-  const [stkCountdown, setStkCountdown] = useState(15);
-  const [mpesaPin, setMpesaPin] = useState('');
+  const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
+  const [canSimulatePayment, setCanSimulatePayment] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // 10-minute hold timer (FR12)
@@ -131,19 +131,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
     setErrorMsg(null);
     setIsProcessing(true);
-
-    if (paymentMethod === 'mpesa') {
-      // Show simulated STK push prompt on user's phone
-      setStkPromptVisible(true);
-      setStkCountdown(15);
-    } else {
-      // Process card payment directly
-      await finalizeOrder();
-    }
-  };
-
-  // Finalize order API call after payment confirmation (FR15)
-  const finalizeOrder = async () => {
     try {
       const res = await fetch('/api/orders/checkout', {
         method: 'POST',
@@ -162,13 +149,51 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
       const data = await res.json();
       if (!res.ok) {
-        setErrorMsg(data.error || 'Payment failed');
-        setIsProcessing(false);
-        setStkPromptVisible(false);
+        setErrorMsg(data.error || 'Unable to create pending order');
         return;
       }
 
-      // Trigger celebration confetti
+      setPendingOrder(data.order);
+      setCanSimulatePayment(data.canSimulatePayment === true);
+      setStkPromptVisible(true);
+
+      if (paymentMethod === 'mpesa') {
+        const paymentRes = await fetch('/api/payments/mpesa/stk-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: data.order.id }),
+        });
+        const paymentData = await paymentRes.json();
+        if (!paymentRes.ok) {
+          setErrorMsg(paymentData.error || 'Payment request could not be sent. Your order is still pending.');
+        }
+      }
+
+    } catch {
+      setErrorMsg('Network error starting payment. The order may still be pending; check its status before retrying.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const confirmPayment = async () => {
+    if (!pendingOrder || !canSimulatePayment) return;
+    setIsProcessing(true);
+    setErrorMsg(null);
+
+    try {
+      const res = await fetch(`/api/orders/${pendingOrder.id}/confirm-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulationConfirmed: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || 'Payment has not been confirmed');
+        return;
+      }
+
+      // Trigger celebration only after payment confirmation.
       try {
         confetti({
           particleCount: 120,
@@ -178,7 +203,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         });
       } catch {}
 
-      // Trigger Browser & In-App Notification
       try {
         notificationService.sendTicketConfirmationNotification({
           orderId: data.order.id,
@@ -191,11 +215,12 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         console.warn('Failed to send ticket confirmation notification:', e);
       }
 
-      onSuccess(data.order, data.tickets);
-    } catch (e: any) {
-      setErrorMsg('Network error completing transaction. Please retry.');
-      setIsProcessing(false);
       setStkPromptVisible(false);
+      onSuccess(data.order, data.tickets);
+    } catch {
+      setErrorMsg('Network error confirming payment. The order remains pending.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -206,7 +231,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         <div className="flex items-center justify-between p-6 border-b border-slate-800 bg-slate-900/50">
           <div>
             <span className="text-xs font-bold text-violet-400 uppercase tracking-wider">
-              Secure Checkout
+              Choose How to Pay
             </span>
             <h2 className="text-xl font-extrabold text-white">{event.title}</h2>
           </div>
@@ -301,12 +326,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               {/* M-Pesa Option */}
               <button
                 type="button"
+                disabled={!!pendingOrder}
                 onClick={() => setPaymentMethod('mpesa')}
                 className={`p-4 rounded-2xl border text-left flex flex-col justify-between transition-all ${
                   paymentMethod === 'mpesa'
                     ? 'border-emerald-500 bg-emerald-950/20 ring-2 ring-emerald-500/30'
                     : 'border-slate-800 bg-slate-800/40 hover:bg-slate-800'
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-70`}
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400">
@@ -316,19 +342,20 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </div>
                 <div className="mt-3">
                   <p className="font-extrabold text-sm text-white">M-Pesa STK Push</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">Instant mobile PIN prompt</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Awaiting payment confirmation</p>
                 </div>
               </button>
 
               {/* Card Option */}
               <button
                 type="button"
+                disabled={!!pendingOrder}
                 onClick={() => setPaymentMethod('card')}
                 className={`p-4 rounded-2xl border text-left flex flex-col justify-between transition-all ${
                   paymentMethod === 'card'
                     ? 'border-violet-500 bg-violet-950/20 ring-2 ring-violet-500/30'
                     : 'border-slate-800 bg-slate-800/40 hover:bg-slate-800'
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-70`}
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-violet-500/20 text-violet-400">
@@ -338,7 +365,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </div>
                 <div className="mt-3">
                   <p className="font-extrabold text-sm text-white">Credit / Debit Card</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">Paystack 3D Secure</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Awaiting payment confirmation</p>
                 </div>
               </button>
             </div>
@@ -435,67 +462,77 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
           <button
             type="button"
-            onClick={handleInitiatePayment}
-            disabled={isProcessing}
+            onClick={() => {
+              if (pendingOrder) {
+                setStkPromptVisible(true);
+              } else {
+                handleInitiatePayment();
+              }
+            }}
+            disabled={isProcessing || (!pendingOrder && secondsRemaining <= 0)}
             className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm flex items-center space-x-2 shadow-lg shadow-emerald-600/30 transition disabled:opacity-50"
           >
-            <span>{isProcessing ? 'Connecting Gateway...' : `Pay KES ${total.toLocaleString()}`}</span>
+            <span>{isProcessing ? 'Starting Payment...' : pendingOrder ? 'View Payment Status' : `Pay KES ${total.toLocaleString()}`}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>
 
-        {/* M-Pesa Interactive STK Push Phone Simulation Modal */}
+        {/* Payment remains pending until the server confirms success. */}
         {stkPromptVisible && (
           <div className="absolute inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
             <div className="w-full max-w-sm bg-slate-950 border border-emerald-500/50 rounded-3xl p-6 text-center space-y-5 shadow-2xl relative">
-              {/* Phone vibration ring animation */}
-              <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center mx-auto text-emerald-400 animate-bounce">
-                <Smartphone className="w-8 h-8" />
+              <button
+                type="button"
+                onClick={() => setStkPromptVisible(false)}
+                aria-label="Close payment status and return to checkout"
+                title="Return to checkout"
+                className="absolute top-3 right-3 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="w-16 h-16 rounded-full bg-amber-500/20 border-2 border-amber-500 flex items-center justify-center mx-auto text-amber-400">
+                <Clock className="w-8 h-8" />
               </div>
 
               <div>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 uppercase tracking-wider">
-                  M-Pesa STK Push Sent
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 uppercase tracking-wider">
+                  Payment Pending
                 </span>
-                <h3 className="text-lg font-extrabold text-white mt-1">Prompt sent to {buyerPhone}</h3>
+                <h3 className="text-lg font-extrabold text-white mt-1">
+                  {paymentMethod === 'mpesa' ? `Awaiting M-Pesa payment from ${buyerPhone}` : 'Awaiting card payment'}
+                </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Check your mobile handset to authorize payment of{' '}
-                  <span className="text-emerald-400 font-bold">KES {total.toLocaleString()}</span> to TiketiPass.
+                  No ticket has been issued. Your order will remain pending until payment is confirmed.
+                </p>
+                <p className="text-sm font-bold text-amber-300 mt-2">
+                  Order total: KES {pendingOrder?.total.toLocaleString() ?? total.toLocaleString()}
                 </p>
               </div>
 
-              {/* Interactive PIN Pad Simulator for Instant Testing */}
               <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl space-y-3">
-                <p className="text-xs font-semibold text-slate-300">
-                  📱 Handset Simulation: Enter PIN to Confirm
-                </p>
-                <input
-                  type="password"
-                  maxLength={4}
-                  value={mpesaPin}
-                  onChange={(e) => setMpesaPin(e.target.value)}
-                  placeholder="••••"
-                  className="w-32 mx-auto text-center tracking-widest text-xl py-2 bg-slate-950 border border-slate-700 rounded-xl text-white font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={finalizeOrder}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold transition shadow-md shadow-emerald-600/30"
-                >
-                  Confirm M-Pesa Payment
-                </button>
+                {canSimulatePayment ? (
+                  <>
+                    <p className="text-xs text-slate-300">
+                      Development simulator only. This does not charge a card or request an M-Pesa PIN.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={confirmPayment}
+                      disabled={isProcessing}
+                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold transition shadow-md shadow-emerald-600/30 disabled:opacity-50"
+                    >
+                      {isProcessing ? 'Waiting for confirmation...' : 'Simulate Successful Payment'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-xs text-amber-200">
+                    The payment provider is not configured for this deployment. This order will not be marked paid until a provider confirms it.
+                  </p>
+                )}
+                {errorMsg && <p className="text-xs text-red-400">{errorMsg}</p>}
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setStkPromptVisible(false);
-                  setIsProcessing(false);
-                }}
-                className="text-xs text-slate-500 hover:text-slate-300 font-medium"
-              >
-                Cancel STK Request
-              </button>
             </div>
           </div>
         )}

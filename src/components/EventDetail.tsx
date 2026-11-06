@@ -338,14 +338,15 @@ export const EventDetail: React.FC<EventDetailProps> = ({
               </div>
             </div>
 
-            {/* Checkout Action */}
+            {/* Payment Action */}
             <button
+              type="button"
               onClick={handleStartCheckout}
               disabled={totalSelected === 0 || holding}
               className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-extrabold text-sm flex items-center justify-center space-x-2 shadow-lg shadow-violet-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition active:scale-[0.98]"
             >
               <Lock className="w-4 h-4" />
-              <span>{holding ? 'Reserving Tickets (10m)...' : `Proceed to Checkout (${totalSelected})`}</span>
+              <span>{holding ? 'Reserving Tickets (10m)...' : `Proceed to Pay (${totalSelected})`}</span>
             </button>
 
             <p className="text-[11px] text-center text-slate-400">

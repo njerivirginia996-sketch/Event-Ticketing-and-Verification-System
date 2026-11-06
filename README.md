@@ -1,13 +1,13 @@
 # TiketiPass: Event Ticketing & Real-Time Gate Verification System
 
-**TiketiPass** is a high-concurrency event ticketing and gate verification platform designed for live entertainment, technology conferences, and festivals. It features sub-second HMAC-SHA256 signed QR verification, M-Pesa STK push and card checkout, offline gate scanning with auto-sync, dynamic anti-screenshot rotating QR codes, and Gemini 3.8 Flash AI assistants.
+**TiketiPass** is a high-concurrency event ticketing and gate verification platform designed for live entertainment, technology conferences, and festivals. It features sub-second HMAC-SHA256 signed QR verification, a pending-payment checkout flow, offline gate scanning with auto-sync, dynamic anti-screenshot rotating QR codes, and Gemini 3.8 Flash AI assistants.
 
 ---
 
 ## 🚀 Key Features
 
 1. **Role-Based Access Control (RBAC)**:
-   - **Attendee**: Discover events, reserve tickets with high-concurrency 10-minute hold lock, pay via Safaricom M-Pesa STK Push or Card, receive signed digital passes, transfer tickets with instant reissue, request refunds, and query TiketiBot (AI).
+   - **Attendee**: Discover events, reserve tickets with a high-concurrency 10-minute hold lock, complete payment before receiving signed digital passes, transfer tickets with instant reissue, request refunds, and query TiketiBot (AI).
    - **Gate Staff / Verifier**: Mobile-optimized dark-mode scanner with camera QR reading, instant visual results (`VALID`, `ALREADY USED`, `INVALID`), Web Audio API chimes & haptics, offline manifest caching for zero-internet stadiums, batch sync with duplicate collision detection, and manual search fallback.
    - **Event Organizer**: Real-time sales velocity, revenue metrics, live gate check-in progress, Gemini AI event description writer, promo code engine, attendee CSV export, complimentary pass issuance, and revenue settlement requests.
    - **Super Admin**: Platform governance, gross volume and commission fee auditing, organizer account approvals, payout clearing, and Kenya Data Protection Act 2019 compliant audit logging.
@@ -34,6 +34,10 @@ Create a `.env` file in the project root:
 Copy `.env.example` to `.env` and replace the placeholders with private values. Generate a unique QR signing key (for example, with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`); the server will not start without `QR_SECRET_KEY`.
 
 Seed account passwords and privileged portal access codes are optional environment variables. Set them to enable the corresponding demo sign-ins; without them, seeded accounts cannot log in. The local database at `data/db.json` is created automatically and is excluded from Git because it can contain user data and credentials.
+
+## 💳 Payment Flow
+
+Checkout creates a `pending` order and keeps the selected tickets reserved. It does not issue tickets, count revenue, or send a purchase confirmation until payment is confirmed. The current M-Pesa and card flows are development simulations; the development UI has an explicit test confirmation action. Production payment-provider integration and verified callbacks are not implemented, so production orders remain pending rather than being marked paid without confirmation.
 
 ---
 

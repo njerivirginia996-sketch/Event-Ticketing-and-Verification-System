@@ -88,6 +88,7 @@ interface DBState {
   staffAssignments: StaffAssignment[];
   payouts: PayoutRequest[];
   holds: TicketHold[];
+  pendingPayments: Record<string, { holdToken: string; expiresAt: number }>;
   portalCodes?: {
     super_admin: string;
     organizer: string;
@@ -441,6 +442,7 @@ const initialData: DBState = {
     },
   ],
   holds: [],
+  pendingPayments: {},
   portalCodes: getPortalCodes(),
 };
 
@@ -594,6 +596,7 @@ function loadDB(): DBState {
     }
     if (fs.existsSync(DB_FILE)) {
       const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      data.pendingPayments ||= {};
       data.portalCodes = getPortalCodes();
       seedSampleTickets(data);
       return data;
@@ -619,6 +622,16 @@ function saveDB(state: DBState) {
 
 let db = loadDB();
 
+function releaseTicketHold(holdToken: string) {
+  for (const hold of db.holds.filter(candidate => candidate.holdToken === holdToken)) {
+    const ticketType = db.ticketTypes.find(candidate => candidate.id === hold.ticketTypeId);
+    if (ticketType) {
+      ticketType.held = Math.max(0, ticketType.held - hold.quantity);
+    }
+  }
+  db.holds = db.holds.filter(candidate => candidate.holdToken !== holdToken);
+}
+
 // Periodically clean up expired holds (>10 minutes) to prevent overselling while freeing held stock
 setInterval(() => {
   const now = Date.now();
@@ -634,6 +647,16 @@ setInterval(() => {
     }
     return true;
   });
+  for (const [orderId, payment] of Object.entries(db.pendingPayments)) {
+    if (payment.expiresAt <= now) {
+      const order = db.orders.find(candidate => candidate.id === orderId);
+      if (order && order.status === 'pending') {
+        order.status = 'failed';
+      }
+      delete db.pendingPayments[orderId];
+      changed = true;
+    }
+  }
   if (changed) {
     saveDB(db);
   }
@@ -1261,8 +1284,13 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
     holdToken?: string;
   };
 
-  if (!buyerName || !buyerEmail || !buyerPhone || !eventId || !items || !items.length) {
+  if (!buyerName || !buyerEmail || !buyerPhone || !eventId || !items || !items.length || !holdToken) {
     res.status(400).json({ error: 'Missing required checkout information' });
+    return;
+  }
+
+  if (paymentMethod !== 'mpesa' && paymentMethod !== 'card') {
+    res.status(400).json({ error: 'Unsupported payment method' });
     return;
   }
 
@@ -1272,24 +1300,35 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
     return;
   }
 
+  const now = Date.now();
+  const activeHolds = db.holds.filter(hold =>
+    hold.holdToken === holdToken &&
+    hold.eventId === eventId &&
+    hold.expiresAt > now
+  );
+  const heldQuantities = new Map<string, number>();
+  for (const hold of activeHolds) {
+    heldQuantities.set(hold.ticketTypeId, (heldQuantities.get(hold.ticketTypeId) || 0) + hold.quantity);
+  }
+
   let subtotal = 0;
   const orderItems: { ticketTypeId: string; ticketTypeName: string; quantity: number; unitPrice: number }[] = [];
 
   for (const item of items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      res.status(400).json({ error: 'Ticket quantities must be positive whole numbers' });
+      return;
+    }
+
     const tt = db.ticketTypes.find(t => t.id === item.ticketTypeId && t.eventId === eventId);
     if (!tt) {
       res.status(400).json({ error: `Invalid ticket type: ${item.ticketTypeId}` });
       return;
     }
 
-    // Check availability
-    // If not holding, check available
-    if (!holdToken) {
-      const available = tt.quantity - (tt.sold + tt.held);
-      if (available < item.quantity) {
-        res.status(409).json({ error: `Not enough tickets remaining for ${tt.name}` });
-        return;
-      }
+    if ((heldQuantities.get(tt.id) || 0) < item.quantity) {
+      res.status(409).json({ error: `Your ticket reservation for ${tt.name} has expired or is invalid` });
+      return;
     }
 
     subtotal += tt.price * item.quantity;
@@ -1299,6 +1338,58 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
       quantity: item.quantity,
       unitPrice: tt.price,
     });
+  }
+
+  const requestedQuantities = new Map<string, number>();
+  for (const item of orderItems) {
+    requestedQuantities.set(
+      item.ticketTypeId,
+      (requestedQuantities.get(item.ticketTypeId) || 0) + item.quantity,
+    );
+  }
+  if (requestedQuantities.size !== heldQuantities.size ||
+      [...requestedQuantities].some(([ticketTypeId, quantity]) => heldQuantities.get(ticketTypeId) !== quantity)) {
+    res.status(409).json({ error: 'Your ticket reservation does not match this order' });
+    return;
+  }
+
+  const existingPayment = Object.entries(db.pendingPayments)
+    .find(([, payment]) => payment.holdToken === holdToken);
+  if (existingPayment) {
+    const [existingOrderId] = existingPayment;
+    const existingOrder = db.orders.find(candidate => candidate.id === existingOrderId);
+    const existingQuantities = new Map<string, number>();
+    for (const item of existingOrder?.items || []) {
+      existingQuantities.set(
+        item.ticketTypeId,
+        (existingQuantities.get(item.ticketTypeId) || 0) + item.quantity,
+      );
+    }
+    const sameItems = existingQuantities.size === requestedQuantities.size &&
+      [...requestedQuantities].every(([ticketTypeId, quantity]) => existingQuantities.get(ticketTypeId) === quantity);
+    const sameOrder = existingOrder &&
+      existingOrder.status === 'pending' &&
+      existingOrder.eventId === eventId &&
+      existingOrder.buyerName === buyerName &&
+      existingOrder.buyerEmail.toLowerCase() === buyerEmail.toLowerCase() &&
+      existingOrder.buyerPhone === buyerPhone &&
+      existingOrder.paymentMethod === paymentMethod &&
+      (existingOrder.promoCode || '').toUpperCase() === (promoCode || '').toUpperCase() &&
+      sameItems;
+
+    if (!sameOrder) {
+      res.status(409).json({ error: 'A different payment is already pending for this ticket reservation' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      order: existingOrder,
+      tickets: [],
+      canSimulatePayment: process.env.NODE_ENV !== 'production',
+      message: 'Order is still pending payment confirmation.',
+    });
+    return;
   }
 
   // Calculate discount
@@ -1311,7 +1402,6 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
       } else {
         discount = Math.min(subtotal, promo.value);
       }
-      promo.used += 1;
     }
   }
 
@@ -1319,63 +1409,6 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
   const total = Math.max(0, subtotal - discount + platformFee);
 
   const orderId = 'ord_' + crypto.randomBytes(8).toString('hex');
-  const now = Date.now();
-
-  // Create Tickets with HMAC-SHA256 signature
-  const createdTickets: Ticket[] = [];
-  const ticketIds: string[] = [];
-
-  for (const item of orderItems) {
-    const tt = db.ticketTypes.find(t => t.id === item.ticketTypeId)!;
-    tt.sold += item.quantity;
-    // Release held quantity if applicable
-    if (holdToken) {
-      tt.held = Math.max(0, tt.held - item.quantity);
-    }
-
-    for (let i = 0; i < item.quantity; i++) {
-      const ticketId = 'tkt_' + crypto.randomBytes(8).toString('hex');
-      const ticketNumber = `TKP-${event.category.substring(0, 3).toUpperCase()}-${Math.floor(10000 + Math.random() * 90000)}`;
-      const signature = signTicketPayload(ticketId, event.id, ticketNumber, now);
-
-      const qrPayload = JSON.stringify({
-        ticketId,
-        eventId: event.id,
-        ticketNumber,
-        ts: now,
-        sig: signature,
-      });
-
-      const qrToken = Buffer.from(qrPayload).toString('base64');
-
-      const ticket: Ticket = {
-        id: ticketId,
-        orderId,
-        eventId: event.id,
-        eventTitle: event.title,
-        ticketTypeId: tt.id,
-        ticketTypeName: tt.name,
-        price: tt.price,
-        holderName: buyerName,
-        holderEmail: buyerEmail,
-        holderPhone: buyerPhone,
-        ticketNumber,
-        qrToken,
-        signature,
-        status: 'ACTIVE',
-        createdAt: new Date(now).toISOString(),
-      };
-
-      createdTickets.push(ticket);
-      ticketIds.push(ticketId);
-      db.tickets.push(ticket);
-    }
-  }
-
-  // Remove holds for this token
-  if (holdToken) {
-    db.holds = db.holds.filter(h => h.holdToken !== holdToken);
-  }
 
   const order: Order = {
     id: orderId,
@@ -1390,26 +1423,28 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
     platformFee,
     total,
     promoCode,
-    status: 'completed',
+    status: 'pending',
     paymentMethod,
-    paymentReference: paymentMethod === 'mpesa' ? `MP${Math.floor(10000000 + Math.random() * 90000000)}` : `CARD-${Math.floor(100000 + Math.random() * 900000)}`,
-    ticketIds,
+    ticketIds: [],
     createdAt: new Date(now).toISOString(),
   };
 
   db.orders.push(order);
+  db.pendingPayments[orderId] = {
+    holdToken,
+    expiresAt: Math.min(...activeHolds.map(hold => hold.expiresAt)),
+  };
 
-  // Audit log
   db.auditLogs.push({
     id: 'aud_' + crypto.randomBytes(6).toString('hex'),
     userId: buyerEmail,
     userName: buyerName,
     role: 'buyer',
-    action: 'TICKET_PURCHASE',
+    action: 'PAYMENT_INITIATED',
     entity: 'Order',
     entityId: orderId,
     timestamp: new Date(now).toISOString(),
-    details: { total, paymentMethod, ticketCount: createdTickets.length },
+    details: { total, paymentMethod, ticketCount: 0 },
   });
 
   saveDB(db);
@@ -1417,29 +1452,201 @@ app.post('/api/orders/checkout', (req: Request, res: Response) => {
   res.json({
     success: true,
     order,
-    tickets: createdTickets,
-    message: 'Payment verified and tickets issued successfully!',
+    tickets: [],
+    canSimulatePayment: process.env.NODE_ENV !== 'production',
+    message: 'Order created. Awaiting payment confirmation.',
   });
+});
+
+app.post('/api/orders/:id/confirm-payment', (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === 'production') {
+    res.status(403).json({ error: 'Payment must be confirmed by the configured payment provider.' });
+    return;
+  }
+  if (req.body?.simulationConfirmed !== true) {
+    res.status(400).json({ error: 'Explicit successful payment confirmation is required' });
+    return;
+  }
+
+  const order = db.orders.find(candidate => candidate.id === req.params.id);
+  const payment = db.pendingPayments[req.params.id];
+  if (!order || order.status !== 'pending' || !payment) {
+    res.status(404).json({ error: 'Pending order not found' });
+    return;
+  }
+  if (payment.expiresAt <= Date.now()) {
+    releaseTicketHold(payment.holdToken);
+    order.status = 'failed';
+    delete db.pendingPayments[order.id];
+    saveDB(db);
+    res.status(409).json({ error: 'The ticket reservation expired before payment was confirmed' });
+    return;
+  }
+
+  const paymentHolds = db.holds.filter(hold => hold.holdToken === payment.holdToken);
+  const heldQuantities = new Map<string, number>();
+  for (const hold of paymentHolds) {
+    if (hold.eventId !== order.eventId || hold.expiresAt <= Date.now()) {
+      res.status(409).json({ error: 'The ticket reservation is no longer valid' });
+      return;
+    }
+    heldQuantities.set(hold.ticketTypeId, (heldQuantities.get(hold.ticketTypeId) || 0) + hold.quantity);
+  }
+  const orderedQuantities = new Map<string, number>();
+  for (const item of order.items) {
+    orderedQuantities.set(
+      item.ticketTypeId,
+      (orderedQuantities.get(item.ticketTypeId) || 0) + item.quantity,
+    );
+  }
+  if (orderedQuantities.size !== heldQuantities.size ||
+      [...orderedQuantities].some(([ticketTypeId, quantity]) => heldQuantities.get(ticketTypeId) !== quantity)) {
+    res.status(409).json({ error: 'The ticket reservation no longer matches this order' });
+    return;
+  }
+
+  const event = db.events.find(candidate => candidate.id === order.eventId);
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+  const ticketTypes = new Map<string, TicketType>();
+  for (const item of order.items) {
+    const ticketType = db.ticketTypes.find(candidate =>
+      candidate.id === item.ticketTypeId && candidate.eventId === order.eventId
+    );
+    if (!ticketType) {
+      res.status(409).json({ error: `Ticket type ${item.ticketTypeId} is no longer available` });
+      return;
+    }
+    ticketTypes.set(item.ticketTypeId, ticketType);
+  }
+
+  let promoToRedeem: PromoCode | undefined;
+  if (order.promoCode) {
+    promoToRedeem = db.promoCodes.find(candidate =>
+      candidate.code.toUpperCase() === order.promoCode!.toUpperCase()
+    );
+    if (!promoToRedeem || promoToRedeem.used >= promoToRedeem.usageLimit || new Date(promoToRedeem.expiresAt).getTime() <= Date.now()) {
+      res.status(409).json({ error: 'The promo code is no longer available for this payment' });
+      return;
+    }
+  }
+
+  const createdTickets: Ticket[] = [];
+  const ticketIds: string[] = [];
+  const now = Date.now();
+  for (const item of order.items) {
+    const ticketType = ticketTypes.get(item.ticketTypeId)!;
+    for (let i = 0; i < item.quantity; i++) {
+      const ticketId = 'tkt_' + crypto.randomBytes(8).toString('hex');
+      const ticketNumber = `TKP-${event.category.substring(0, 3).toUpperCase()}-${Math.floor(10000 + Math.random() * 90000)}`;
+      const signature = signTicketPayload(ticketId, event.id, ticketNumber, now);
+      const qrToken = Buffer.from(JSON.stringify({
+        ticketId,
+        eventId: event.id,
+        ticketNumber,
+        ts: now,
+        sig: signature,
+      })).toString('base64');
+
+      const ticket: Ticket = {
+        id: ticketId,
+        orderId: order.id,
+        eventId: event.id,
+        eventTitle: event.title,
+        ticketTypeId: ticketType.id,
+        ticketTypeName: ticketType.name,
+        price: ticketType.price,
+        holderName: order.buyerName,
+        holderEmail: order.buyerEmail,
+        holderPhone: order.buyerPhone,
+        ticketNumber,
+        qrToken,
+        signature,
+        status: 'ACTIVE',
+        createdAt: new Date(now).toISOString(),
+      };
+      createdTickets.push(ticket);
+      ticketIds.push(ticketId);
+    }
+  }
+
+  for (const item of order.items) {
+    ticketTypes.get(item.ticketTypeId)!.sold += item.quantity;
+  }
+  if (promoToRedeem) {
+    promoToRedeem.used += 1;
+  }
+  releaseTicketHold(payment.holdToken);
+  db.tickets.push(...createdTickets);
+  order.status = 'completed';
+  order.paymentReference = `SIM-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+  order.ticketIds = ticketIds;
+  delete db.pendingPayments[order.id];
+
+  db.auditLogs.push({
+    id: 'aud_' + crypto.randomBytes(6).toString('hex'),
+    userId: order.buyerEmail,
+    userName: order.buyerName,
+    role: 'buyer',
+    action: 'PAYMENT_CONFIRMED',
+    entity: 'Order',
+    entityId: order.id,
+    timestamp: new Date(now).toISOString(),
+    details: { total: order.total, paymentMethod: order.paymentMethod, ticketCount: createdTickets.length },
+  });
+  saveDB(db);
+  res.json({ success: true, order, tickets: createdTickets, message: 'Payment confirmed and tickets issued.' });
+});
+
+app.post('/api/orders/:id/cancel', (req: Request, res: Response) => {
+  const order = db.orders.find(candidate => candidate.id === req.params.id);
+  const payment = db.pendingPayments[req.params.id];
+  if (!order || order.status !== 'pending' || !payment) {
+    res.status(404).json({ error: 'Pending order not found' });
+    return;
+  }
+
+  releaseTicketHold(payment.holdToken);
+  delete db.pendingPayments[order.id];
+  order.status = 'failed';
+  saveDB(db);
+  res.json({ success: true, order });
 });
 
 // --- M-Pesa STK Push Simulation / Daraja Trigger ---
 app.post('/api/payments/mpesa/stk-push', (req: Request, res: Response) => {
-  const { phone, amount } = req.body;
-  if (!phone || !amount) {
-    res.status(400).json({ error: 'Phone and amount are required' });
+  const { orderId } = req.body as { orderId?: string };
+  if (!orderId) {
+    res.status(400).json({ error: 'Order ID is required' });
     return;
   }
 
-  // In a production environment with Daraja keys, you invoke the Safaricom STK Push endpoint.
-  // Here we return a realistic CheckoutRequestID and prompt details
+  if (process.env.NODE_ENV === 'production') {
+    res.status(503).json({ error: 'M-Pesa payment provider is not configured. The order remains pending.' });
+    return;
+  }
+
+  const order = db.orders.find(candidate =>
+    candidate.id === orderId &&
+    candidate.status === 'pending' &&
+    candidate.paymentMethod === 'mpesa'
+  );
+  if (!order) {
+    res.status(404).json({ error: 'Pending M-Pesa order not found' });
+    return;
+  }
+
   const checkoutRequestId = 'ws_CO_' + Date.now() + '_' + Math.floor(10000 + Math.random() * 90000);
   res.json({
     success: true,
+    status: 'pending',
     CheckoutRequestID: checkoutRequestId,
     MerchantRequestID: 'MR_' + Math.floor(100000 + Math.random() * 900000),
     ResponseCode: '0',
-    ResponseDescription: 'Success. Request accepted for processing',
-    CustomerMessage: `An STK push prompt has been dispatched to ${phone}. Enter your M-Pesa PIN to complete payment of KES ${Number(amount).toLocaleString()}.`,
+    ResponseDescription: 'Simulated payment request accepted; awaiting customer confirmation',
+    CustomerMessage: `Awaiting payment confirmation for KES ${order.total.toLocaleString()}.`,
   });
 });
 
@@ -2083,8 +2290,9 @@ app.get('/api/organizer/dashboard', (req: Request, res: Response) => {
   const orgTicketTypes = db.ticketTypes.filter(tt => eventIds.has(tt.eventId));
   const orgTickets = db.tickets.filter(t => eventIds.has(t.eventId));
   const orgOrders = db.orders.filter(o => eventIds.has(o.eventId));
+  const completedOrders = orgOrders.filter(order => order.status === 'completed');
 
-  const totalGrossRevenue = orgOrders.reduce((sum, o) => sum + (o.subtotal - o.discount), 0);
+  const totalGrossRevenue = completedOrders.reduce((sum, o) => sum + (o.subtotal - o.discount), 0);
   const totalTicketsSold = orgTicketTypes.reduce((sum, tt) => sum + tt.sold, 0);
   const totalCheckedIn = orgTickets.filter(t => t.status === 'USED').length;
 
@@ -2225,8 +2433,9 @@ app.post('/api/organizer/payouts/request', (req: Request, res: Response) => {
 
 // ==================== SUPER ADMIN ENDPOINTS ====================
 app.get('/api/admin/dashboard', (req: Request, res: Response) => {
-  const totalVolume = db.orders.reduce((sum, o) => sum + o.total, 0);
-  const totalPlatformFees = db.orders.reduce((sum, o) => sum + o.platformFee, 0);
+  const completedOrders = db.orders.filter(order => order.status === 'completed');
+  const totalVolume = completedOrders.reduce((sum, o) => sum + o.total, 0);
+  const totalPlatformFees = completedOrders.reduce((sum, o) => sum + o.platformFee, 0);
   const totalOrganizers = db.organizations.length;
   const totalEvents = db.events.length;
   const totalTicketsSold = db.tickets.length;
