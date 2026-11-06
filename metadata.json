@@ -1,0 +1,10 @@
+{
+  "name": "TiketiPass - Event Ticketing & Verification",
+  "description": "Full-stack event ticketing platform with secure HMAC QR verification, M-Pesa STK push and card payments, mobile gate scanner, real-time analytics, and Gemini AI.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
