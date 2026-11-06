@@ -337,8 +337,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-base font-extrabold text-white">Staff account requests</h3>
-              <p className="text-xs text-slate-400 mt-1">Approve requests before staff or admin accounts can sign in.</p>
+              <h3 className="text-base font-extrabold text-white">Super Admin account requests</h3>
+              <p className="text-xs text-slate-400 mt-1">Organizer and Gate Verifier accounts activate with their portal codes and do not need approval.</p>
             </div>
             <button
               onClick={() => void fetchAccountRequests()}
@@ -358,7 +358,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
           {requestsLoading ? (
             <p className="text-sm text-slate-400">Loading requests...</p>
           ) : accountRequests.length === 0 ? (
-            <p className="text-sm text-slate-400">There are no pending account requests.</p>
+            <p className="text-sm text-slate-400">There are no pending Super Admin account requests.</p>
           ) : (
             <div className="space-y-3">
               {accountRequests.map((request) => (
@@ -370,7 +370,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
                     <p className="text-sm font-bold text-white">{request.name}</p>
                     <p className="text-xs text-slate-300">{request.email} · {request.phone}</p>
                     <p className="text-xs text-amber-300 mt-1 capitalize">
-                      {request.role.replace('_', ' ')} · Requested {new Date(request.createdAt).toLocaleDateString()}
+                      Super Admin · Requested {new Date(request.createdAt).toLocaleDateString()}
                     </p>
                   </div>
                   <button
@@ -379,7 +379,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
                     className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    {approvingRequestId === request.id ? 'Approving...' : 'Approve Account'}
+                    {approvingRequestId === request.id ? 'Approving...' : 'Approve Super Admin'}
                   </button>
                 </div>
               ))}

@@ -732,15 +732,6 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     return;
   }
 
-  if (user.status === 'pending') {
-    res.status(403).json({ error: 'Your account request is awaiting administrator approval.' });
-    return;
-  }
-  if (user.status !== 'active') {
-    res.status(403).json({ error: 'This account is not active. Contact an administrator for assistance.' });
-    return;
-  }
-
   const requestedRole = portalRole || portalType || reqRole;
   const targetRole = requestedRole || user.role;
   const effectiveCode = portalCode || portalSecurityCode || code;
@@ -799,6 +790,21 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     }
   }
 
+  if (user.status === 'pending' && (user.role === 'organizer' || user.role === 'gate_staff')) {
+    user.status = 'active';
+    if (user.organizationId) {
+      const organization = db.organizations.find((candidate) => candidate.id === user.organizationId);
+      if (organization) organization.status = 'approved';
+    }
+    saveDB(db);
+  } else if (user.status === 'pending') {
+    res.status(403).json({ error: 'Your account request is awaiting administrator approval.' });
+    return;
+  } else if (user.status !== 'active') {
+    res.status(403).json({ error: 'This account is not active. Contact an administrator for assistance.' });
+    return;
+  }
+
   const { password: _, ...userSafe } = user;
   res.json({
     success: true,
@@ -809,7 +815,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
 
 // 2. Public attendee registration and staff account approval requests
 app.post('/api/auth/register', (req: Request, res: Response) => {
-  const { name, email, phone, password, role = 'attendee', organizationName } = req.body;
+  const { name, email, phone, password, role = 'attendee', organizationName, portalCode } = req.body;
 
   if (!name || !email || !password) {
     res.status(400).json({ error: 'Name, email, and password are required' });
@@ -827,8 +833,21 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     return;
   }
   if (role === 'organizer' && (!organizationName || !String(organizationName).trim())) {
-    res.status(400).json({ error: 'Organization name is required for organizer account requests.' });
+    res.status(400).json({ error: 'Organization name is required for organizer accounts.' });
     return;
+  }
+
+  const currentCodes = db.portalCodes || getPortalCodes();
+  if (role === 'organizer' || role === 'gate_staff') {
+    const requiredCode = role === 'organizer' ? currentCodes.organizer : currentCodes.gate_staff;
+    if (!requiredCode || typeof portalCode !== 'string' || portalCode.trim().toUpperCase() !== requiredCode.trim().toUpperCase()) {
+      res.status(403).json({
+        error: `A valid ${role === 'organizer' ? 'Organizer' : 'Gate Verifier'} portal code is required to create this account.`,
+        requiresCode: true,
+        role,
+      });
+      return;
+    }
   }
 
   const queryEmail = String(email).trim().toLowerCase();
@@ -839,7 +858,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   }
 
   const userId = 'usr_' + crypto.randomBytes(6).toString('hex');
-  const pendingApproval = role !== 'attendee';
+  const pendingApproval = role === 'super_admin';
   let organizationId: string | undefined;
 
   if (role === 'organizer') {
@@ -850,7 +869,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
       name: String(organizationName).trim(),
       logo: 'https://images.unsplash.com/photo-1540575467063-178a50c2df87?w=300&auto=format&fit=crop&q=80',
       payoutDetails: { mpesaNumber: phone },
-      status: pendingApproval ? 'pending' : 'approved',
+      status: 'approved',
       createdAt: new Date().toISOString(),
     });
   }
@@ -875,7 +894,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     res.status(201).json({
       success: true,
       pendingApproval: true,
-      message: 'Your account request has been submitted. You can sign in after a Super Admin approves it.',
+      message: 'Your Super Admin account request has been submitted. You can sign in after approval.',
     });
     return;
   }
@@ -967,7 +986,7 @@ app.get('/api/admin/account-requests', (req: Request, res: Response) => {
   if (!requireSuperAdmin(req, res)) return;
 
   const requests = db.users
-    .filter((user) => user.status === 'pending' && user.role !== 'attendee')
+    .filter((user) => user.status === 'pending' && user.role === 'super_admin')
     .map(({ password: _password, ...user }) => user);
   res.json({ success: true, requests });
 });
@@ -982,8 +1001,8 @@ app.post('/api/admin/account-requests/:id/approve', (req: Request, res: Response
   if (!requireSuperAdmin(req, res)) return;
 
   const user = db.users.find((candidate) => candidate.id === req.params.id);
-  if (!user || user.status !== 'pending' || user.role === 'attendee') {
-    res.status(404).json({ error: 'Pending staff account request not found.' });
+  if (!user || user.status !== 'pending' || user.role !== 'super_admin') {
+    res.status(404).json({ error: 'Pending Super Admin account request not found.' });
     return;
   }
 

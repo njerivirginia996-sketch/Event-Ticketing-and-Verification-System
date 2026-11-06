@@ -238,6 +238,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           password,
           role,
           organizationName: role === 'organizer' ? organizationName : undefined,
+          portalCode: role === 'organizer' || role === 'gate_staff' ? adminSecret.trim().toUpperCase() : undefined,
         }),
       });
       const data = await res.json();
@@ -585,7 +586,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <button
                     key={accountRole}
                     type="button"
-                    onClick={() => setRole(accountRole)}
+                    onClick={() => {
+                      setRole(accountRole);
+                      setAdminSecret('');
+                      setErrorMessage(null);
+                    }}
                     aria-pressed={role === accountRole}
                     className={`min-h-11 p-2.5 rounded-xl border text-left font-bold transition ${
                       role === accountRole
@@ -602,8 +607,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {role !== 'attendee' && (
               <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-800/60 text-xs text-amber-200">
                 {role === 'organizer'
-                  ? 'Organizer accounts require administrator approval before portal access is enabled.'
-                  : `${role === 'gate_staff' ? 'Gate Verifier' : 'Super Admin'} accounts require administrator approval before access is enabled.`}
+                  ? 'Enter a valid Organizer portal code to create your account. No administrator approval is needed.'
+                  : role === 'gate_staff'
+                    ? 'Enter a valid Gate Verifier portal code to create your account. No administrator approval is needed.'
+                    : 'Super Admin accounts require administrator approval before portal access is enabled.'}
+              </div>
+            )}
+
+            {(role === 'organizer' || role === 'gate_staff') && (
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-slate-400">Portal Security Code</label>
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required
+                    value={adminSecret}
+                    onChange={(e) => setAdminSecret(e.target.value.toUpperCase())}
+                    placeholder={`Enter ${role === 'organizer' ? 'Organizer' : 'Gate Verifier'} code`}
+                    className="w-full pl-9 pr-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-base text-white focus:ring-2 focus:ring-violet-500 focus:outline-none sm:py-2 sm:text-xs"
+                  />
+                </div>
               </div>
             )}
 
@@ -699,8 +723,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             >
               <span>
                 {loading
-                  ? role === 'attendee' ? 'Creating Account...' : 'Submitting Request...'
-                  : role === 'attendee' ? 'Create Account' : 'Request Account Approval'}
+                  ? role === 'super_admin' ? 'Submitting Request...' : 'Creating Account...'
+                  : role === 'super_admin' ? 'Request Super Admin Approval' : 'Create Account'}
               </span>
               <ArrowRight className="w-4 h-4" />
             </button>
