@@ -18,6 +18,12 @@ interface SuperAdminDashboardProps {
   authToken: string;
 }
 
+type PortalCodes = {
+  super_admin: string;
+  organizer: string;
+  gate_staff: string;
+};
+
 export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authToken }) => {
   const [stats, setStats] = useState({
     totalVolume: 12450000,
@@ -33,6 +39,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
   const [requestsLoading, setRequestsLoading] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [approvingRequestId, setApprovingRequestId] = useState<string | null>(null);
+  const [portalCodes, setPortalCodes] = useState<PortalCodes | null>(null);
+  const [portalCodesLoading, setPortalCodesLoading] = useState(false);
+  const [portalCodesError, setPortalCodesError] = useState<string | null>(null);
   const [commissionRate, setCommissionRate] = useState<number>(3);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([
     {
@@ -117,6 +126,32 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
   useEffect(() => {
     void fetchAccountRequests();
   }, [authToken]);
+
+  useEffect(() => {
+    if (activeTab !== 'security') return;
+
+    const fetchPortalCodes = async () => {
+      setPortalCodesLoading(true);
+      setPortalCodesError(null);
+      try {
+        const response = await fetch('/api/admin/portal-codes', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to load portal security codes.');
+        }
+        setPortalCodes(data.portalCodes);
+      } catch (error) {
+        setPortalCodes(null);
+        setPortalCodesError(error instanceof Error ? error.message : 'Failed to load portal security codes.');
+      } finally {
+        setPortalCodesLoading(false);
+      }
+    };
+
+    void fetchPortalCodes();
+  }, [activeTab, authToken]);
 
   const handleApproveAccountRequest = async (id: string) => {
     setApprovingRequestId(id);
@@ -267,14 +302,34 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ authTo
       )}
 
       {activeTab === 'security' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5">
           <div className="flex items-center gap-2 text-amber-400 font-bold">
             <Lock className="w-5 h-5" />
-            <h3 className="text-base text-white">Staff portal access</h3>
+            <h3 className="text-base text-white">Portal security codes</h3>
           </div>
           <p className="text-sm text-slate-300 max-w-3xl">
-            Portal access codes are not displayed in the application or returned by public endpoints. Staff must sign in with an account assigned to their role.
+            Share each code only with authorized staff for its portal. These codes are visible only to an authenticated Super Admin.
           </p>
+          {portalCodesLoading ? (
+            <p className="text-sm text-slate-400">Loading portal codes...</p>
+          ) : portalCodesError ? (
+            <p role="alert" className="text-sm text-red-300">{portalCodesError}</p>
+          ) : portalCodes && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                { label: 'Super Admin', code: portalCodes.super_admin },
+                { label: 'Event Organizer', code: portalCodes.organizer },
+                { label: 'Gate Verifier', code: portalCodes.gate_staff },
+              ].map(({ label, code }) => (
+                <div key={label} className="rounded-2xl border border-slate-700 bg-slate-800/60 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                  <p className="mt-2 break-all font-mono text-lg font-bold text-amber-300">
+                    {code || 'Not configured'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

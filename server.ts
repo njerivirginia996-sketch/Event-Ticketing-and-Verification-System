@@ -943,6 +943,12 @@ app.get('/api/admin/account-requests', (req: Request, res: Response) => {
   res.json({ success: true, requests });
 });
 
+app.get('/api/admin/portal-codes', (req: Request, res: Response) => {
+  if (!requireSuperAdmin(req, res)) return;
+
+  res.json({ success: true, portalCodes: db.portalCodes || getPortalCodes() });
+});
+
 app.post('/api/admin/account-requests/:id/approve', (req: Request, res: Response) => {
   if (!requireSuperAdmin(req, res)) return;
 
