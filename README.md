@@ -35,6 +35,8 @@ Copy `.env.example` to `.env` and replace the placeholders with private values. 
 
 Seed account passwords and privileged portal access codes are optional environment variables. Set them to enable the corresponding demo sign-ins; without them, seeded accounts cannot log in. `DEMO_ADMIN_EMAIL` and `DEMO_ADMIN_PASSWORD` configure the seeded Super Admin login at startup, including when a database file already exists. The local database at `data/db.json` is created automatically and is excluded from Git because it can contain user data and credentials.
 
+Attendee Google sign-in requires a Google OAuth 2.0 Web application client ID in `GOOGLE_CLIENT_ID`. Add the app's production and local origins to the authorized JavaScript origins in Google Cloud Console, then set the client ID in the deployment environment. Google ID tokens are verified by the server; the app never asks for or stores a Google password.
+
 ## 💳 Payment Flow
 
 Checkout creates a `pending` order and keeps the selected tickets reserved. It does not issue tickets, count revenue, or send a purchase confirmation until payment is confirmed. The current M-Pesa and card flows are development simulations; the development UI has an explicit test confirmation action. Production payment-provider integration and verified callbacks are not implemented, so production orders remain pending rather than being marked paid without confirmation.

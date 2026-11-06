@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import { OAuth2Client } from 'google-auth-library';
 import {
   User,
   Organization,
@@ -29,6 +30,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const QR_SECRET = process.env.QR_SECRET_KEY || '';
+const googleOAuthClient = new OAuth2Client();
 
 if (!QR_SECRET) {
   throw new Error('QR_SECRET_KEY must be configured before starting the server.');
@@ -886,43 +888,70 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   });
 });
 
-// 3. Google One-Click Authentication
-app.post('/api/auth/google', (req: Request, res: Response) => {
-  const { email, name, googleId, picture, role = 'attendee' } = req.body;
-  if (!isValidEmail(email)) {
-    res.status(400).json({ error: 'A valid Google email address is required' });
+// 3. Google Identity Services authentication for attendees
+app.get('/api/auth/google/config', (_req: Request, res: Response) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  if (!clientId) {
+    res.status(503).json({ error: 'Google sign-in is not configured yet.' });
     return;
   }
-  if (role !== 'attendee') {
-    res.status(403).json({ error: 'Google sign-in is only available for attendee accounts. Submit a staff account request instead.' });
+  res.json({ success: true, clientId });
+});
+
+app.post('/api/auth/google', async (req: Request, res: Response) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const { credential } = req.body;
+  if (!clientId) {
+    res.status(503).json({ error: 'Google sign-in is not configured yet.' });
+    return;
+  }
+  if (typeof credential !== 'string' || !credential) {
+    res.status(400).json({ error: 'A Google ID credential is required.' });
     return;
   }
 
-  const queryEmail = String(email).trim().toLowerCase();
-  let user = db.users.find(u => u.email.toLowerCase() === queryEmail);
+  let payload;
+  try {
+    const ticket = await googleOAuthClient.verifyIdToken({ idToken: credential, audience: clientId });
+    payload = ticket.getPayload();
+  } catch (error) {
+    console.error('[TiketiPass] Google ID token verification failed:', error);
+    res.status(401).json({ error: 'Google could not verify this sign-in. Please try again.' });
+    return;
+  }
+  if (!payload?.sub || !isValidEmail(payload.email) || payload.email_verified !== true) {
+    res.status(401).json({ error: 'Use a Google account with a verified email address.' });
+    return;
+  }
 
+  const queryEmail = payload.email.trim().toLowerCase();
+  let user = db.users.find((candidate) => candidate.email.toLowerCase() === queryEmail);
   if (user && user.role !== 'attendee') {
     res.status(403).json({ error: 'Staff accounts must use their authorized sign-in method.' });
+    return;
+  }
+  if (user && user.status !== 'active') {
+    res.status(403).json({ error: 'This account is not active. Contact an administrator for assistance.' });
     return;
   }
 
   if (!user) {
     user = {
       id: 'usr_g_' + crypto.randomBytes(6).toString('hex'),
-      name: name || queryEmail.split('@')[0],
+      name: payload.name || queryEmail.split('@')[0],
       email: queryEmail,
       phone: '+254700000000',
       role: 'attendee',
       status: 'active',
-      googleId: googleId || 'gid_' + crypto.randomBytes(8).toString('hex'),
-      avatarUrl: picture || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name || queryEmail)}&backgroundColor=06b6d4`,
+      googleId: payload.sub,
+      avatarUrl: payload.picture || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(payload.name || queryEmail)}&backgroundColor=06b6d4`,
       createdAt: new Date().toISOString(),
     };
     db.users.push(user);
     saveDB(db);
   } else {
-    if (picture) user.avatarUrl = picture;
-    if (googleId) user.googleId = googleId;
+    if (payload.picture) user.avatarUrl = payload.picture;
+    user.googleId = payload.sub;
     saveDB(db);
   }
 
