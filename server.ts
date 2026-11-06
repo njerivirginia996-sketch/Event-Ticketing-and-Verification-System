@@ -113,7 +113,7 @@ const initialData: DBState = {
     {
       id: 'usr_admin',
       name: 'Virginia Njeri',
-      email: 'admin@tiketipass.com',
+      email: process.env.DEMO_ADMIN_EMAIL?.trim().toLowerCase() || 'admin@tiketipass.com',
       phone: '+254712345000',
       role: 'super_admin',
       status: 'active',
@@ -599,8 +599,9 @@ function loadDB(): DBState {
       data.pendingPayments ||= {};
       data.portalCodes = getPortalCodes();
       const admin = data.users.find((user: User) => user.id === 'usr_admin' && user.role === 'super_admin');
-      if (admin && process.env.DEMO_ADMIN_PASSWORD) {
-        admin.password = process.env.DEMO_ADMIN_PASSWORD;
+      if (admin) {
+        admin.email = process.env.DEMO_ADMIN_EMAIL?.trim().toLowerCase() || admin.email;
+        admin.password = process.env.DEMO_ADMIN_PASSWORD || admin.password;
       }
       seedSampleTickets(data);
       return data;
